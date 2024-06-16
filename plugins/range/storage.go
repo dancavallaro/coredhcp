@@ -5,44 +5,47 @@
 package rangeplugin
 
 import (
-	"database/sql"
+	"bufio"
 	"errors"
 	"fmt"
 	"net"
-
-	_ "github.com/mattn/go-sqlite3"
+	"os"
+	"strconv"
+	"strings"
 )
 
-func loadDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s", path))
+type leaseDB struct {
+	f *os.File
+}
+
+func loadDB(path string) (*leaseDB, error) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database (%T): %w", err, err)
 	}
-	if _, err := db.Exec("create table if not exists leases4 (mac string not null, ip string not null, expiry int, hostname string not null, primary key (mac, ip))"); err != nil {
-		return nil, fmt.Errorf("table creation failed: %w", err)
-	}
-	return db, nil
+	return &leaseDB{f}, nil
 }
 
 // loadRecords loads the DHCPv6/v4 Records global map with records stored on
 // the specified file. The records have to be one per line, a mac address and an
 // IP address.
-func loadRecords(db *sql.DB) (map[string]*Record, error) {
-	rows, err := db.Query("select mac, ip, expiry, hostname from leases4")
-	if err != nil {
-		return nil, fmt.Errorf("failed to query leases database: %w", err)
-	}
-	defer rows.Close()
+func loadRecords(db *leaseDB) (map[string]*Record, error) {
+	scanner := bufio.NewScanner(db.f)
 	var (
 		mac, ip, hostname string
 		expiry            int
 		records           = make(map[string]*Record)
+		hwaddr            net.HardwareAddr
+		err               error
 	)
-	for rows.Next() {
-		if err := rows.Scan(&mac, &ip, &expiry, &hostname); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
+	for scanner.Scan() {
+		fields := strings.Split(scanner.Text(), ",")
+		mac, ip, hostname = fields[0], fields[1], fields[3]
+		expiry, err = strconv.Atoi(fields[2])
+		if err != nil {
+			return nil, fmt.Errorf("couldn't parse expiry: %s", fields[2])
 		}
-		hwaddr, err := net.ParseMAC(mac)
+		hwaddr, err = net.ParseMAC(mac)
 		if err != nil {
 			return nil, fmt.Errorf("malformed hardware address: %s", mac)
 		}
@@ -52,25 +55,14 @@ func loadRecords(db *sql.DB) (map[string]*Record, error) {
 		}
 		records[hwaddr.String()] = &Record{IP: ipaddr, expires: expiry, hostname: hostname}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed lease database row scanning: %w", err)
-	}
 	return records, nil
 }
 
 // saveIPAddress writes out a lease to storage
 func (p *PluginState) saveIPAddress(mac net.HardwareAddr, record *Record) error {
-	stmt, err := p.leasedb.Prepare(`insert or replace into leases4(mac, ip, expiry, hostname) values (?, ?, ?, ?)`)
+	_, err := p.leasedb.f.WriteString(fmt.Sprintf("%s,%s,%d,%s\n",
+		mac.String(), record.IP.String(), record.expires, record.hostname))
 	if err != nil {
-		return fmt.Errorf("statement preparation failed: %w", err)
-	}
-	defer stmt.Close()
-	if _, err := stmt.Exec(
-		mac.String(),
-		record.IP.String(),
-		record.expires,
-		record.hostname,
-	); err != nil {
 		return fmt.Errorf("record insert/update failed: %w", err)
 	}
 	return nil

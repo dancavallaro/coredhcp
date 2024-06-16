@@ -5,7 +5,6 @@
 package rangeplugin
 
 import (
-	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -29,10 +28,10 @@ var Plugin = plugins.Plugin{
 	Setup4: setupRange,
 }
 
-//Record holds an IP lease record
+// Record holds an IP lease record
 type Record struct {
-	IP      net.IP
-	expires int
+	IP       net.IP
+	expires  int
 	hostname string
 }
 
@@ -43,7 +42,7 @@ type PluginState struct {
 	// Recordsv4 holds a MAC -> IP address and lease time mapping
 	Recordsv4 map[string]*Record
 	LeaseTime time.Duration
-	leasedb   *sql.DB
+	leasedb   *leaseDB
 	allocator allocators.Allocator
 }
 
@@ -62,8 +61,8 @@ func (p *PluginState) Handler4(req, resp *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, bool) 
 			return nil, true
 		}
 		rec := Record{
-			IP:      ip.IP.To4(),
-			expires: int(time.Now().Add(p.LeaseTime).Unix()),
+			IP:       ip.IP.To4(),
+			expires:  int(time.Now().Add(p.LeaseTime).Unix()),
 			hostname: hostname,
 		}
 		err = p.saveIPAddress(req.ClientHWAddr, &rec)
